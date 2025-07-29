@@ -29,6 +29,7 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
+import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules import rnnt_abstract
@@ -1336,6 +1337,21 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         # to change, requires running ``model.temperature = T`` explicitly
         self.temperature = 1.0
+        
+        self.loss_fn_none = nn.MSELoss(reduction='sum')
+
+    def l2_norm(self, output, target, target_lengths):
+        B, U, T, V = output.shape
+        loss_elem = torch.nn.functional.mse_loss(output, target, reduction='none')
+        target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
+        mask = target_lengths > 0
+        mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
+        masked_loss = loss_elem * mask_expanded
+        loss = masked_loss.sum() / mask_expanded.sum()
+        return loss
+
+
+
 
     @typecheck()
     def forward(
@@ -1380,6 +1396,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 )
 
             losses = []
+            losses_g0 = []
+            l2_losses = []
             wers, wer_nums, wer_denoms = [], [], []
             target_lengths = []
             batch_size = int(encoder_outputs.size(0))  # actual batch size
@@ -1418,31 +1436,19 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                         sub_dec = sub_dec.narrow(dim=1, start=0, length=int(max_sub_transcript_length + 1))
 
                     # Perform joint => [sub-batch, T', U', V + 1]
-                    #sub_joint = self.joint(sub_enc, sub_dec)
+                    sub_joint = self.joint(sub_enc, sub_dec)
+                    sub_joint_0 = self.joint(sub_enc, sub_dec*0)
 
-                    #del sub_dec
-                    
+
+                    del sub_dec
+
                     # Reduce transcript length to correct alignment
                     # Transcript: [sub-batch, L] -> [sub-batch, L']; L' <= L
                     if sub_transcripts.shape[1] != max_sub_transcript_length:
                         sub_transcripts = sub_transcripts.narrow(dim=1, start=0, length=int(max_sub_transcript_length))
 
-                    # Perform joint => [sub-batch, T', U', V + 1]
-                    sos_tensor = torch.ones(sub_transcripts.size(0), 1) * 3642
-                    sub_transcripts_expend = torch.cat((sos_tensor.to(sub_transcripts.device), sub_transcripts), dim=-1)
-                    #sub_transcripts_expend = torch.cat((torch.zeros(sub_transcripts.size(0), 1).to(sub_transcripts.device), sub_transcripts), dim=-1)
-                    sub_transcripts_expend = sub_transcripts_expend.unsqueeze(1).unsqueeze(-1)  # Shape: [B, 1, U, 1]
-                    prob_tensor = torch.where(sub_transcripts_expend > 2617, 
-                                              torch.full_like(sub_transcripts_expend, 0.5), 
-                                              torch.full_like(sub_transcripts_expend, 0.8))
-                    #print(f'prob_tensor {prob_tensor.shape}')
-                    #print(f'sub_dec {sub_dec.shape}')
-
-                    sub_joint = self.joint(sub_enc, sub_dec, prob_tensor=prob_tensor)
-
-                    del sub_dec
-                    
-
+                    l2_loss = self.l2_norm(sub_joint_0, sub_joint, sub_transcripts)
+                    l2_losses.append(l2_loss)
                     # Compute sub batch loss
                     # preserve loss reduction type
                     loss_reduction = self.loss.reduction
@@ -1460,6 +1466,13 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     losses.append(loss_batch)
                     target_lengths.append(sub_transcript_lens)
 
+                    loss_batch_g0 = self.loss(
+                        log_probs=sub_joint_0,
+                        targets=sub_transcripts,
+                        input_lengths=sub_enc_lens,
+                        target_lengths=sub_transcript_lens,
+                    )
+                    losses_g0.append(loss_batch_g0)
                     # reset loss reduction type
                     self.loss.reduction = loss_reduction
 
@@ -1499,6 +1512,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             # Reduce over sub batches
             if losses is not None:
                 losses = self.loss.reduce(losses, target_lengths)
+                losses_g0 = self.loss.reduce(losses_g0, target_lengths)
+                l2_losses = sum(l2_losses) / len(l2_losses)
+                losses = losses + losses_g0 + l2_losses
 
             # Collect sub batch wer results
             if compute_wer:
@@ -1536,7 +1552,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """
         return self.pred(prednet_output)
 
-    def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor, prob_tensor: torch.Tensor) -> torch.Tensor:
+    def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
         r"""
         Compute the joint step of the network after projection.
 
@@ -1569,12 +1585,11 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         f = f.unsqueeze(dim=2)  # (B, T, 1, H)
         g = g.unsqueeze(dim=1)  # (B, 1, U, H)
 
-        if self.training and self.masking_prob > 0:
-            [B, _, U, _] = g.shape
-            rand = torch.rand([B, 1, U, 1]).to(g.device)
-            #rand = torch.gt(rand, self.masking_prob)
-            rand = rand > prob_tensor
-            g = g * rand
+        #if self.training and self.masking_prob > 0:
+        #    [B, _, U, _] = g.shape
+        #    rand = torch.rand([B, 1, U, 1]).to(g.device)
+        #    rand = torch.gt(rand, self.masking_prob)
+        #    g = g * rand
 
         inp = f + g  # [B, T, U, H]
 
@@ -2234,3 +2249,4 @@ class SampledRNNTJoint(RNNTJoint):
 for cls in [RNNTDecoder, RNNTJoint, SampledRNNTJoint]:
     if adapter_mixins.get_registered_adapter(cls) is None:
         adapter_mixins.register_adapter(cls, cls)  # base class is adapter compatible itself
+
