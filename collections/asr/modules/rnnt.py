@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules import rnnt_abstract
@@ -1350,6 +1351,21 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         loss = masked_loss.sum() / mask_expanded.sum()
         return loss
 
+    def kl_divergence(self, output, target, target_lengths):
+        B, U, T, V = output.shape
+        output_log_probs = F.log_softmax(output, dim=-1)
+        target_probs = F.softmax(target, dim=-1).clamp(min=1e-8)
+        kld_elem = F.kl_div(output_log_probs, target_probs, reduction='none')
+        target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
+        mask = target_lengths > 0
+        mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
+
+        masked_loss = kld_elem * mask_expanded
+        loss = masked_loss.sum() / mask_expanded.sum()
+        return loss
+
+
+
 
 
 
@@ -1447,7 +1463,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     if sub_transcripts.shape[1] != max_sub_transcript_length:
                         sub_transcripts = sub_transcripts.narrow(dim=1, start=0, length=int(max_sub_transcript_length))
 
-                    l2_loss = self.l2_norm(sub_joint_0, sub_joint, sub_transcripts)
+                    #l2_loss = self.l2_norm(sub_joint_0, sub_joint, sub_transcripts)
+                    l2_loss = self.kl_divergence(sub_joint_0, sub_joint, sub_transcripts)
                     l2_losses.append(l2_loss)
                     # Compute sub batch loss
                     # preserve loss reduction type
@@ -1509,12 +1526,13 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
                 del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
 
-            # Reduce over sub batches
+            loss_list = None
             if losses is not None:
                 losses = self.loss.reduce(losses, target_lengths)
                 losses_g0 = self.loss.reduce(losses_g0, target_lengths)
                 l2_losses = sum(l2_losses) / len(l2_losses)
-                losses = losses + losses_g0 + l2_losses
+                #losses = losses + losses_g0 + l2_losses
+                loss_list = [losses, losses_g0, l2_losses]
 
             # Collect sub batch wer results
             if compute_wer:
@@ -1526,7 +1544,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 wer_num = None
                 wer_denom = None
 
-            return losses, wer, wer_num, wer_denom
+            return loss_list, wer, wer_num, wer_denom
 
     def project_encoder(self, encoder_output: torch.Tensor) -> torch.Tensor:
         """

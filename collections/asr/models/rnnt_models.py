@@ -770,7 +770,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 compute_wer = False
 
             # Fused joint step
-            loss_value, wer, _, _ = self.joint(
+            loss_list, wer, _, _ = self.joint(
                 encoder_outputs=encoded,
                 decoder_outputs=decoder,
                 encoder_lengths=encoded_len,
@@ -778,6 +778,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 transcript_lengths=transcript_len,
                 compute_wer=compute_wer,
             )
+
+            rnnt_loss, g0_rnnt_loss, l2_norm_loss = loss_list[0], loss_list[1], loss_list[2] 
+            loss_value = sum(loss_list)
 
             # Add auxiliary losses, if registered
             loss_value = self.add_auxiliary_losses(loss_value)
@@ -787,7 +790,10 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 AccessMixin.reset_registry(self)
 
             tensorboard_logs = {
-                'train_loss': loss_value,
+                'train_loss': rnnt_loss,
+                'train_loss_g0': g0_rnnt_loss,
+                'l2_norm_loss': l2_norm_loss,
+                'combined_loss': loss_value, 
                 'learning_rate': self._optimizer.param_groups[0]['lr'],
                 'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
             }
@@ -880,7 +886,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             )
 
             if loss_value is not None:
-                tensorboard_logs['val_loss'] = loss_value
+                tensorboard_logs['val_loss'] = loss_value[0]
 
             tensorboard_logs['val_wer_num'] = wer_num
             tensorboard_logs['val_wer_denom'] = wer_denom
@@ -1084,3 +1090,4 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     @wer.setter
     def wer(self, wer):
         self._wer = wer
+
