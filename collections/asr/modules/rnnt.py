@@ -1369,7 +1369,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
 
 
-    @typecheck()
+    #@typecheck()
     def forward(
         self,
         encoder_outputs: torch.Tensor,
