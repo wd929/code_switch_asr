@@ -1343,7 +1343,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
     def l2_norm(self, output, target, target_lengths):
         B, U, T, V = output.shape
-        loss_elem = torch.nn.functional.mse_loss(output, target, reduction='none')
+        target_detach = target.detach()
+        loss_elem = torch.nn.functional.mse_loss(output, target_detach, reduction='none')
         target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
         mask = target_lengths > 0
         mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
