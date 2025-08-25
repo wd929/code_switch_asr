@@ -348,7 +348,10 @@ class RNNTLoss(Loss):
         loss:
             NeuralType(None)
         """
-        return {"loss": NeuralType(elements_type=LossType())}
+        return {"loss": NeuralType(elements_type=LossType()),
+                "alphas": NeuralType(elements_type=LogprobsType()),
+                "betas": NeuralType(elements_type=LogprobsType()),
+                }
 
     def __init__(self, num_classes, reduction: str = 'mean_batch', loss_name: str = "default", loss_kwargs=None):
         """

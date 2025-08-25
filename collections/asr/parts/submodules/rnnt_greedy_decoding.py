@@ -249,7 +249,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
              logits of shape (B, T=1, U=1, V + 1)
         """
         with torch.no_grad():
-            logits = self.joint.joint(enc, pred, prob_tensor=pred)
+            logits = self.joint.joint(enc, pred)
 
             if log_normalize is None:
                 if not logits.is_cuda:  # Use log softmax only if on CPU

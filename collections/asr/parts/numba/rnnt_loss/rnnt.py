@@ -252,6 +252,8 @@ def tdt_loss_gpu(
     num_threads: int,
     sigma: float,
     omega: float,
+    alphas_cost: torch.Tensor,
+    betas_cost: torch.Tensor,
 ):
     """
     Wrapper method for accessing GPU TDT loss (https://arxiv.org/abs/2304.06795).
@@ -354,6 +356,8 @@ def tdt_loss_gpu(
             pad_labels=labels.data,
             label_lengths=label_lengths.data,
             input_lengths=input_lengths.data,
+            alphas_cost=alphas_cost.data,
+            betas_cost=betas_cost.data,
         )
 
         if status != global_constants.RNNTStatus.RNNT_STATUS_SUCCESS:

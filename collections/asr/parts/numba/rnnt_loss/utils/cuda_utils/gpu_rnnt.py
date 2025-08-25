@@ -570,6 +570,8 @@ class GPUTDT(GPURNNT):
         labels: torch.Tensor,
         label_lengths: torch.Tensor,
         input_lengths: torch.Tensor,
+        alphas_cost: torch.Tensor,
+        betas_cost: torch.Tensor,
     ) -> global_constants.RNNTStatus:
         """
         Compute both the loss and the gradients.
@@ -738,6 +740,13 @@ class GPUTDT(GPURNNT):
         rnnt_helper.compute_costs_data[blockspergrid, threadsperblock, self.stream_, 0](
             llForward, costs, self.fastemit_lambda_
         )
+        #self.stream_.synchronize()
+
+        # alphas and betas copy
+        threads_per_block = min(alphas_cost.shape[0], 32)
+        blocks_per_grid = (alphas_cost.shape[0] + threads_per_block - 1) // threads_per_block
+        rnnt_helper.copy_tensor[blocks_per_grid, threads_per_block, self.stream_, 0](alphas, alphas_cost)
+        rnnt_helper.copy_tensor[blocks_per_grid, threads_per_block, self.stream_, 0](betas, betas_cost)
         self.stream_.synchronize()
 
         return global_constants.RNNTStatus.RNNT_STATUS_SUCCESS
@@ -752,6 +761,8 @@ class GPUTDT(GPURNNT):
         pad_labels: torch.Tensor,
         label_lengths: torch.Tensor,
         input_lengths: torch.Tensor,
+        alphas_cost: torch.Tensor,
+        betas_cost: torch.Tensor,
     ):
         if (
             duration_acts is None
@@ -766,7 +777,7 @@ class GPUTDT(GPURNNT):
             return global_constants.RNNTStatus.RNNT_STATUS_INVALID_VALUE
 
         return self.compute_cost_and_score(
-            label_acts, duration_acts, label_grads, duration_grads, costs, pad_labels, label_lengths, input_lengths
+            label_acts, duration_acts, label_grads, duration_grads, costs, pad_labels, label_lengths, input_lengths, alphas_cost, betas_cost
         )
 
     def score_forward(

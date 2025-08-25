@@ -1343,8 +1343,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
     def l2_norm(self, output, target, target_lengths):
         B, U, T, V = output.shape
-        target_detach = target.detach()
-        loss_elem = torch.nn.functional.mse_loss(output, target_detach, reduction='none')
+        loss_elem = torch.nn.functional.mse_loss(output, target, reduction='none')
         target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
         mask = target_lengths > 0
         mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
@@ -1352,6 +1351,24 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         loss = masked_loss.sum() / mask_expanded.sum()
         return loss
 
+    def weighted_l2_norm(self, output, target, target_lengths, alphas, betas, loss_batch):
+        B, U, T, V = output.shape
+        alphas = alphas.view(B, T, U).transpose(1,2)
+        betas = betas.view(B, T, U).transpose(1,2)
+        loss_batch = loss_batch.view(B, 1, 1)
+
+        post_prob = torch.exp(alphas + betas - loss_batch)
+        post_prob = post_prob.unsqueeze(-1)
+
+        weighted_target = target * post_prob
+        
+        loss_elem = torch.nn.functional.mse_loss(output, weighted_target, reduction='none')
+        target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
+        mask = target_lengths > 0
+        mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
+        masked_loss = loss_elem * mask_expanded
+        loss = masked_loss.sum() / mask_expanded.sum()
+        return loss
     def kl_divergence(self, output, target, target_lengths):
         B, U, T, V = output.shape
         output_log_probs = F.log_softmax(output, dim=-1)
@@ -1365,6 +1382,27 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         loss = masked_loss.sum() / mask_expanded.sum()
         return loss
 
+    def weighted_kl_divergence(self, output, target, target_lengths, alphas, betas, loss_batch):
+        B, U, T, V = output.shape
+        alphas = alphas.view(B, T, U).transpose(1,2)
+        betas = betas.view(B, T, U).transpose(1,2)
+        loss_batch = loss_batch.view(B, 1, 1)
+
+        post_prob = torch.exp(alphas + betas - loss_batch)
+        post_prob = post_prob.unsqueeze(-1)
+
+        output_log_probs = F.log_softmax(output, dim=-1)
+        weighted_target = F.softmax(target*post_prob, dim=-1).clamp(min=1e-8)
+        #weighted_target = target * post_prob
+
+        kld_elem = F.kl_div(output_log_probs, weighted_target, reduction='none')
+        target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
+        mask = target_lengths > 0
+        mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
+
+        masked_loss = kld_elem * mask_expanded
+        loss = masked_loss.sum() / mask_expanded.sum()
+        return loss
 
 
 
@@ -1465,8 +1503,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                         sub_transcripts = sub_transcripts.narrow(dim=1, start=0, length=int(max_sub_transcript_length))
 
                     #l2_loss = self.l2_norm(sub_joint_0, sub_joint, sub_transcripts)
-                    l2_loss = self.kl_divergence(sub_joint_0, sub_joint, sub_transcripts)
-                    l2_losses.append(l2_loss)
+                    #l2_loss = self.kl_divergence(sub_joint_0, sub_joint, sub_transcripts)
+                    #l2_losses.append(l2_loss)
                     # Compute sub batch loss
                     # preserve loss reduction type
                     loss_reduction = self.loss.reduction
@@ -1475,16 +1513,17 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     self.loss.reduction = None
 
                     # compute and preserve loss
-                    loss_batch = self.loss(
+                    loss_batch, alphas, betas = self.loss(
                         log_probs=sub_joint,
                         targets=sub_transcripts,
                         input_lengths=sub_enc_lens,
                         target_lengths=sub_transcript_lens,
                     )
+
                     losses.append(loss_batch)
                     target_lengths.append(sub_transcript_lens)
 
-                    loss_batch_g0 = self.loss(
+                    loss_batch_g0, _, _ = self.loss(
                         log_probs=sub_joint_0,
                         targets=sub_transcripts,
                         input_lengths=sub_enc_lens,
@@ -1493,6 +1532,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     losses_g0.append(loss_batch_g0)
                     # reset loss reduction type
                     self.loss.reduction = loss_reduction
+                    
+                    l2_loss = self.weighted_kl_divergence(sub_joint_0, sub_joint, sub_transcripts, alphas, betas, loss_batch)
+                    l2_losses.append(l2_loss)
 
                 else:
                     losses = None
@@ -1527,6 +1569,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
                 del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
 
+            # Reduce over sub batches
             loss_list = None
             if losses is not None:
                 losses = self.loss.reduce(losses, target_lengths)
@@ -2268,4 +2311,3 @@ class SampledRNNTJoint(RNNTJoint):
 for cls in [RNNTDecoder, RNNTJoint, SampledRNNTJoint]:
     if adapter_mixins.get_registered_adapter(cls) is None:
         adapter_mixins.register_adapter(cls, cls)  # base class is adapter compatible itself
-
