@@ -1360,9 +1360,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         post_prob = torch.exp(alphas + betas - loss_batch)
         post_prob = post_prob.unsqueeze(-1)
 
-        weighted_target = target * post_prob
-        
-        loss_elem = torch.nn.functional.mse_loss(output, weighted_target, reduction='none')
+        loss_elem = torch.nn.functional.mse_loss(output, target, reduction='none')
+        loss_elem *= post_prob
+
         target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
         mask = target_lengths > 0
         mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
@@ -1392,10 +1392,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         post_prob = post_prob.unsqueeze(-1)
 
         output_log_probs = F.log_softmax(output, dim=-1)
-        weighted_target = F.softmax(target*post_prob, dim=-1).clamp(min=1e-8)
-        #weighted_target = target * post_prob
+        weighted_target = F.softmax(target, dim=-1).clamp(min=1e-8)
 
         kld_elem = F.kl_div(output_log_probs, weighted_target, reduction='none')
+        kld_elem *= post_prob
         target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
         mask = target_lengths > 0
         mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
@@ -2311,3 +2311,4 @@ class SampledRNNTJoint(RNNTJoint):
 for cls in [RNNTDecoder, RNNTJoint, SampledRNNTJoint]:
     if adapter_mixins.get_registered_adapter(cls) is None:
         adapter_mixins.register_adapter(cls, cls)  # base class is adapter compatible itself
+
