@@ -1369,6 +1369,30 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         masked_loss = loss_elem * mask_expanded
         loss = masked_loss.sum() / mask_expanded.sum()
         return loss
+
+    def weighted_combine(self, output, target, target_lengths, alphas, betas, loss_batch):
+        B, U, T, V = output.shape
+        alphas = alphas.view(B, T, U).transpose(1,2)
+        betas = betas.view(B, T, U).transpose(1,2)
+        loss_batch = loss_batch.view(B, 1, 1)
+
+        post_prob = torch.exp(alphas + betas - loss_batch)
+        post_prob = post_prob.unsqueeze(-1)
+
+        target_probs = F.softmax(target, dim=-1).clamp(min=1e-8)
+        output_log_probs = F.log_softmax(output, dim=-1)
+
+        loss_elem = torch.nn.functional.mse_loss(output_log_probs, torch.log(target_probs), reduction='none')
+        loss_elem *= target_probs
+        loss_elem *= post_prob
+
+        target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
+        mask = target_lengths > 0
+        mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
+        masked_loss = loss_elem * mask_expanded
+        loss = masked_loss.sum() / mask_expanded.sum()
+        return loss
+
     def kl_divergence(self, output, target, target_lengths):
         B, U, T, V = output.shape
         output_log_probs = F.log_softmax(output, dim=-1)
