@@ -1380,9 +1380,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         post_prob = post_prob.unsqueeze(-1)
 
         target_probs = F.softmax(target, dim=-1).clamp(min=1e-8)
+        target_log_probs = F.log_softmax(target, dim=-1)
         output_log_probs = F.log_softmax(output, dim=-1)
 
-        loss_elem = torch.nn.functional.mse_loss(output_log_probs, torch.log(target_probs), reduction='none')
+        loss_elem = torch.nn.functional.mse_loss(output_log_probs, target_log_probs, reduction='none')
         loss_elem *= target_probs
         loss_elem *= post_prob
 
