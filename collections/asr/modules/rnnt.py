@@ -1429,7 +1429,38 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         loss = masked_loss.sum() / mask_expanded.sum()
         return loss
 
+    def sep_weighted_kl_divergence(self, output, target, target_lengths, alphas, betas, loss_batch):
+        B, U, T, V = output.shape
+        alphas = alphas.view(B, T, U).transpose(1,2)
+        betas = betas.view(B, T, U).transpose(1,2)
+        loss_batch = loss_batch.view(B, 1, 1)
 
+        post_prob = torch.exp(alphas + betas - loss_batch)
+        post_prob = post_prob.unsqueeze(-1)
+
+        tokens_probs = output[:,:,:,:-5]
+        dur_probs = output[:,:,:,-5:]
+        tokens_output_log_probs = F.log_softmax(tokens_probs, dim=-1)
+        dur_output_log_probs = F.log_softmax(dur_probs, dim=-1)
+
+        tokens_target = target[:,:,:,:-5]
+        dur_target = target[:,:,:,-5:]
+        tokens_target_probs = F.softmax(tokens_target, dim=-1).clamp(min=1e-8)
+        dur_target_probs = F.softmax(dur_target, dim=-1).clamp(min=1e-8)
+
+        tokens_kld_elem = F.kl_div(tokens_output_log_probs, tokens_target_probs, reduction='none')
+        dur_kld_elem = F.kl_div(dur_output_log_probs, dur_target_probs, reduction='none')
+        tokens_kld_elem *= post_prob
+        dur_kld_elem *= post_prob
+
+        kld_elem = torch.cat((tokens_kld_elem, dur_kld_elem), dim=-1)
+        target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
+        mask = target_lengths > 0
+        mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
+
+        masked_loss = kld_elem * mask_expanded
+        loss = masked_loss.sum() / mask_expanded.sum()
+        return loss
 
 
 
