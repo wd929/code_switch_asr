@@ -1493,7 +1493,42 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         loss = masked_loss.sum() / mask_expanded.sum()
         return loss
 
+    def weighted_combine(self, output, target, target_lengths, alphas, betas, loss_batch):
+        B, U, T, V = output.shape
+        alphas = alphas.view(B, T, U).transpose(1,2)
+        betas = betas.view(B, T, U).transpose(1,2)
+        loss_batch = loss_batch.view(B, 1, 1)
 
+        post_prob = torch.exp(alphas + betas - loss_batch)
+        post_prob = post_prob.unsqueeze(-1)
+
+        tokens_probs = output[:,:,:,:-5]
+        dur_probs = output[:,:,:,-5:]
+
+        tokens_target = target[:,:,:,:-5]
+        dur_target = target[:,:,:,-5:]
+
+        def combine_loss(target, output):
+
+            target_probs = F.softmax(target, dim=-1).clamp(min=1e-8)
+            target_log_probs = F.log_softmax(target, dim=-1)
+            output_log_probs = F.log_softmax(output, dim=-1)
+
+            loss_elem = torch.nn.functional.mse_loss(output_log_probs, target_log_probs, reduction='none')
+            loss_elem *= target_probs
+            return loss_elem
+        tokens_loss_elem = combine_loss(tokens_target, tokens_probs)
+        dur_loss_elem = combine_loss(dur_target, dur_probs)
+        tokens_loss_elem *= post_prob
+        dur_loss_elem *= post_prob
+        loss_elem = torch.cat((tokens_loss_elem, dur_loss_elem), dim=-1)
+
+        target_lengths = torch.nn.functional.pad(target_lengths, pad=(0, 1))
+        mask = target_lengths > 0
+        mask_expanded = mask.unsqueeze(1).unsqueeze(3).expand(-1, U, -1, V)
+        masked_loss = loss_elem * mask_expanded
+        loss = masked_loss.sum() / mask_expanded.sum()
+        return loss
 
     #@typecheck()
     def forward(
